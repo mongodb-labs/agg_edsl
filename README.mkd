@@ -1,0 +1,2 @@
+# MongoDSL
+A simple DSL for MongoDB in Python
