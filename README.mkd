@@ -1,2 +1,5 @@
 # MongoDSL
 A simple DSL for MongoDB aggregation in Python
+
+## Note
+This is an experimental project, and heavily based on [bytecode](https://github.com/MatthieuDartiailh/bytecode) and [fpy](https://github.com/Z-Shang/fpy), of which the former might have breaking change when the CPython compiler decides to change the compilation output of currently known syntacies, the latter might have issue keeping up with the former project.
