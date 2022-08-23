@@ -8,7 +8,7 @@ from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
 from fpy.utils.placeholder import __
 
-from mongodsl.ast import BinOp, Call, Sym, Var
+from mongodsl.ast import BinOp, Call, Sym, Var, Const
 from mongodsl.scope import analyse_var
 
 """
@@ -54,6 +54,12 @@ class SetField:
 
 
 @dataclass
+class GroupBlock:
+    idField: List[bc.Instr]
+    inner: List[SetField]
+
+
+@dataclass
 class Stage:
     name: str
     expr: Any
@@ -73,19 +79,27 @@ class Pipeline:
         return [s.to_json() for s in self.stages if s is not None]
 
 
+BLOCKS = {"group": GroupBlock}
+
+
 instr = lambda x: isinstance(x, bc.Instr)
 loadg = and_(instr, __.name == "LOAD_GLOBAL")
 loadf = and_(instr, __.name == "LOAD_FAST")
 loadv = or_(loadg, loadf)
 load_ = and_(loadg, __.arg == "_")
 loadm = and_(instr, __.name == "LOAD_METHOD")
+const = and_(instr, __.name == "LOAD_CONST")
 escape = one(load_) >> one(loadm)
 
 fncall = and_(instr, __.name == "CALL_FUNCTION")
 popTop = and_(instr, __.name == "POP_TOP")
+popBlock = and_(instr, __.name == "POP_BLOCK")
 storeFast = and_(instr, __.name == "STORE_FAST")
-none = and_(instr, and_(__.name == "LOAD_CONST", __.arg == None))
+none = and_(const, __.arg == None)
 ret = and_(instr, __.name == "RETURN_VALUE")
+
+setupWith = and_(instr, __.name == "SETUP_WITH")
+jumpForward = and_(instr, __.name == "JUMP_FORWARD")
 
 binAdd = and_(instr, __.name == "BINARY_ADD")
 binSub = and_(instr, __.name == "BINARY_SUBTRACT")
@@ -198,6 +212,8 @@ def parseExpr(instrs: List[bc.Instr]):
             part, rem = partitionInst(rem, 1)
             parts.append(parseExpr(part))
         return Call(fn_name, parts)
+    if const(instrs[-1]):
+        return Const(instrs[-1].arg)
 
 
 def parseSetStage(stage: SetField):
@@ -212,10 +228,33 @@ def parseSetStage(stage: SetField):
     )
 
 
+def parseGroupStage(stage: GroupBlock):
+    id_expr = parseExpr(stage.idField)
+    inner_name = []
+    inner_expr = []
+    for inner in stage.inner:
+        if not inner:
+            continue
+        assert isinstance(inner, SetField)
+        inner_name.append(inner.name[0])
+        inner_expr.append(parseExpr(inner.expr[0]))
+    return Stage(
+        "$group",
+        lambda: {"_id": analyse_var(id_expr).to_json()}
+        | {
+            name: analyse_var(expr).to_json()
+            for name, expr in zip(inner_name, inner_expr)
+        },
+    )
+
+
 def parseStage(stage):
     if isinstance(stage, SetField):
         print("parsing set stage")
         return parseSetStage(stage)
+    elif isinstance(stage, GroupBlock):
+        print("parsing group stage")
+        return parseGroupStage(stage)
     else:
         if none(stage[0]) and ret(stage[1]):
             return None
@@ -223,26 +262,64 @@ def parseStage(stage):
         return parseNormalStage(stage)
 
 
+def partitionBlock(head, instrs):
+    if not instrs:
+        return None
+    assert loadg(head[0])
+    assert fncall(head[-1])
+    inner = []
+    while instrs:
+        i = instrs.pop(0)
+        if popBlock(i):
+            while instrs and not jumpForward(instrs[0]):
+                instrs.pop(0)
+            assert instrs, "instrs cannot be empty here"
+            end_label = instrs[0].arg
+            while instrs and instrs[0] != end_label:
+                instrs.pop(0)
+            assert instrs[0] == end_label
+            instrs.pop(0)
+            break
+        inner.append(i)
+    print(f"{inner = }")
+    inner_parts = []
+    while inner:
+        part, inner = partitionPipeline(inner)
+        inner_parts.append(part)
+    block_name = head[0].arg
+    return BLOCKS[block_name](head[1:-1], inner_parts), instrs
+
+
+def partitionPipeline(instrs):
+    if not instrs:
+        return None
+    buf = []
+    while instrs:
+        i = instrs.pop(0)
+        if popTop(i):
+            return buf, instrs
+        elif setupWith(i):
+            return partitionBlock(buf, instrs)
+        elif storeFast(i):
+            return SetField([i.arg], [buf]), instrs
+        else:
+            buf.append(i)
+    return buf, []
+
+
 def aggregate(fn):
     b = bc.Bytecode.from_code(fn.__code__)
     parts = []
-    buf = []
-    for i in b:
-        if popTop(i):
-            parts.append(buf)
-            buf = []
-        elif storeFast(i):
+    while b:
+        part, b = partitionPipeline(b)
+        if isinstance(part, SetField):
             if parts and isinstance(parts[-1], SetField):
-                parts[-1].name.append(i.arg)
-                parts[-1].expr.append(buf)
+                parts[-1].name += part.name
+                parts[-1].expr += part.expr
             else:
-                parts.append(SetField([i.arg], [buf]))
-            buf = []
+                parts.append(part)
         else:
-            buf.append(i)
-    if buf:
-        parts.append(buf)
-
+            parts.append(part)
     print(parts)
     res = Pipeline(mp1(parseStage, parts))
     print(res)

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from mongodsl.ast import BinOp, Call, Sym, Var
+from mongodsl.ast import BinOp, Call, Sym, Var, Const
 
 STAGES = ("set", "group", "addFields")
 
@@ -21,3 +21,5 @@ def analyse_var(e):
         return e
     elif isinstance(e, Sym):
         return Var(e.name)
+    elif isinstance(e, Const):
+        return e

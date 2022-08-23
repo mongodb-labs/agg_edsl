@@ -1,12 +1,20 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
+from typing import List, Any
 
 
 class Node(ABC):
     @abstractmethod
     def to_json(self) -> str:
         ...
+
+
+@dataclass
+class Const(Node):
+    val: Any
+
+    def to_json(self):
+        return self.val
 
 
 @dataclass
