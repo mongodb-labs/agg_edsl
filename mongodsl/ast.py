@@ -14,7 +14,7 @@ class Const(Node):
     val: Any
 
     def to_json(self):
-        return self.val
+        return {"$const": self.val}
 
 
 @dataclass
