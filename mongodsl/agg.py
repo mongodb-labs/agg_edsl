@@ -49,8 +49,8 @@ class Esc:
 
 @dataclass
 class SetField:
-    name: str
-    expr: List[bc.Instr]
+    name: List[str]
+    expr: List[List[bc.Instr]]
 
 
 @dataclass
@@ -202,8 +202,14 @@ def parseExpr(instrs: List[bc.Instr]):
 
 def parseSetStage(stage: SetField):
     field_name = stage.name
-    raw_expr = parseExpr(stage.expr)
-    return Stage("$set", lambda: {field_name: analyse_var(raw_expr).to_json()})
+    raw_expr = list(map(parseExpr, stage.expr))
+    return Stage(
+        "$set",
+        lambda: {
+            name: analyse_var(expr).to_json()
+            for name, expr in zip(field_name, raw_expr)
+        },
+    )
 
 
 def parseStage(stage):
@@ -226,7 +232,11 @@ def aggregate(fn):
             parts.append(buf)
             buf = []
         elif storeFast(i):
-            parts.append(SetField(i.arg, buf))
+            if parts and isinstance(parts[-1], SetField):
+                parts[-1].name.append(i.arg)
+                parts[-1].expr.append(buf)
+            else:
+                parts.append(SetField([i.arg], [buf]))
             buf = []
         else:
             buf.append(i)
