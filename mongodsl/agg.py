@@ -8,7 +8,7 @@ from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
 from fpy.utils.placeholder import __
 
-from mongodsl.ast import BinOp, Call, Sym, Var, Const
+from mongodsl.ast import BinCmp, BinOp, Call, Const, Raw, Sym, Var
 from mongodsl.scope import analyse_var
 
 """
@@ -54,8 +54,9 @@ class SetField:
 
 
 @dataclass
-class GroupBlock:
-    idField: List[bc.Instr]
+class Block:
+    name: str
+    argExpr: List[bc.Instr]
     inner: List[SetField]
 
 
@@ -79,7 +80,7 @@ class Pipeline:
         return [s.to_json() for s in self.stages if s is not None]
 
 
-BLOCKS = {"group": GroupBlock}
+BLOCK_ARG = {"group": "_id"}
 
 
 instr = lambda x: isinstance(x, bc.Instr)
@@ -94,6 +95,7 @@ escape = one(load_) >> one(loadm)
 fncall = and_(instr, __.name == "CALL_FUNCTION")
 popTop = and_(instr, __.name == "POP_TOP")
 popBlock = and_(instr, __.name == "POP_BLOCK")
+popExcept = and_(instr, __.name == "POP_EXCEPT")
 storeFast = and_(instr, __.name == "STORE_FAST")
 none = and_(const, __.arg == None)
 ret = and_(instr, __.name == "RETURN_VALUE")
@@ -107,11 +109,28 @@ binMul = and_(instr, __.name == "BINARY_MULTIPLY")
 binDiv = and_(instr, __.name == "BINARY_TRUE_DIVIDE")
 binOp = or_(binAdd, or_(binSub, or_(binMul, binDiv)))
 
+binCmp = and_(instr, __.name == "COMPARE_OP")
+
+dupTop = and_(instr, __.name == "DUP_TOP")
+dupTop2 = and_(instr, __.name == "DUP_TOP_TWO")
+rot2 = and_(instr, __.name == "ROT_TWO")
+rot3 = and_(instr, __.name == "ROT_THREE")
+rot4 = and_(instr, __.name == "ROT_FOUR")
+
 OPMAP = {
     "BINARY_ADD": "add",
     "BINARY_SUBTRACT": "subtract",
     "BINARY_MULTIPLY": "multiply",
     "BINARY_TRUE_DIVIDE": "divide",
+}
+
+CMPMAP = {
+    bc.Compare.GE: "gte",
+    bc.Compare.GT: "gt",
+    bc.Compare.LE: "lte",
+    bc.Compare.LT: "lt",
+    bc.Compare.EQ: "eq",
+    bc.Compare.NE: "ne",
 }
 
 parseNoneRet = many(
@@ -129,6 +148,9 @@ def partitionInst(insts, n):
     if n == 0:
         return [], insts
     head = insts[-1]
+    # if not instr(head):
+    #     nxt, rst = partitionInst(insts[:-1], n)
+    #     return nxt + [head], rst
     pre, post = head.pre_and_post_stack_effect()
     if pre >= 0:
         if pre == n:
@@ -177,17 +199,21 @@ def transformArgs(args):
 
 
 def parseNormalStage(stage):
+    print(stage)
     assert loadg(stage[0]), "The first thing in a stage must be the stage name"
     assert fncall(stage[-1]), "A stage must appear as a function call"
     name = stage[0].arg
     nargs = stage[-1].arg
+    print(f"{name = }")
+    print(f"{nargs = }")
     parts = []
     rest = stage[1:-1]
     for _ in range(nargs):
         part, rest = partitionInst(rest, 1)
-        parts.append(part)
+        parts.append(parseExpr(part))
+    print(f"{parts = }")
     assert len(parts) == 1, "A stage cannot have more than one set of args"
-    return Stage(name, transformArgs(parts[0]))
+    return Stage(f"${name}", lambda: analyse_var(parts[0]).to_json())
 
 
 def parseExpr(instrs: List[bc.Instr]):
@@ -204,6 +230,15 @@ def parseExpr(instrs: List[bc.Instr]):
         print(f"operand {b = }")
         assert not rem
         return BinOp(OPMAP[op], parseExpr(a), parseExpr(b))
+    if binCmp(instrs[-1]):
+        op = instrs[-1].arg
+        rem = instrs[:-1]
+        b, rem = partitionInst(rem, 1)
+        a, rem = partitionInst(rem, 1)
+        print(f"operand {a = }")
+        print(f"operand {b = }")
+        assert not rem
+        return BinCmp(CMPMAP[op], parseExpr(a), parseExpr(b))
     if fncall(instrs[-1]):
         fn_name = instrs[0].arg
         parts = []
@@ -213,7 +248,7 @@ def parseExpr(instrs: List[bc.Instr]):
             parts.append(parseExpr(part))
         return Call(fn_name, parts)
     if const(instrs[-1]):
-        return Const(instrs[-1].arg)
+        return Raw(instrs[-1].arg)
 
 
 def parseSetStage(stage: SetField):
@@ -228,19 +263,20 @@ def parseSetStage(stage: SetField):
     )
 
 
-def parseGroupStage(stage: GroupBlock):
-    id_expr = parseExpr(stage.idField)
+def parseBlockStage(stage: Block):
+    arg = parseExpr(stage.argExpr)
+    argFieldName = BLOCK_ARG.get(stage.name, None)
     inner_name = []
     inner_expr = []
     for inner in stage.inner:
         if not inner:
             continue
-        assert isinstance(inner, SetField)
+        # assert isinstance(inner, SetField)
         inner_name.append(inner.name[0])
         inner_expr.append(parseExpr(inner.expr[0]))
     return Stage(
-        "$group",
-        lambda: {"_id": analyse_var(id_expr).to_json()}
+        f"${stage.name}",
+        lambda: ({argFieldName: analyse_var(arg).to_json()} if argFieldName else {})
         | {
             name: analyse_var(expr).to_json()
             for name, expr in zip(inner_name, inner_expr)
@@ -252,13 +288,13 @@ def parseStage(stage):
     if isinstance(stage, SetField):
         print("parsing set stage")
         return parseSetStage(stage)
-    elif isinstance(stage, GroupBlock):
-        print("parsing group stage")
-        return parseGroupStage(stage)
+    elif isinstance(stage, Block):
+        print("parsing block stage")
+        return parseBlockStage(stage)
     else:
         if none(stage[0]) and ret(stage[1]):
             return None
-        print("parsing non set stage")
+        print("parsing normal stage")
         return parseNormalStage(stage)
 
 
@@ -271,23 +307,18 @@ def partitionBlock(head, instrs):
     while instrs:
         i = instrs.pop(0)
         if popBlock(i):
-            while instrs and not jumpForward(instrs[0]):
-                instrs.pop(0)
-            assert instrs, "instrs cannot be empty here"
-            end_label = instrs[0].arg
-            while instrs and instrs[0] != end_label:
-                instrs.pop(0)
-            assert instrs[0] == end_label
+            while instrs:
+                if popExcept(instrs.pop(0)):
+                    break
             instrs.pop(0)
             break
         inner.append(i)
-    print(f"{inner = }")
     inner_parts = []
     while inner:
         part, inner = partitionPipeline(inner)
         inner_parts.append(part)
     block_name = head[0].arg
-    return BLOCKS[block_name](head[1:-1], inner_parts), instrs
+    return Block(block_name, head[1:-1], inner_parts), instrs
 
 
 def partitionPipeline(instrs):
@@ -308,7 +339,8 @@ def partitionPipeline(instrs):
 
 
 def aggregate(fn):
-    b = bc.Bytecode.from_code(fn.__code__)
+    raw_b = bc.Bytecode.from_code(fn.__code__)
+    b = [i for i in raw_b if instr(i)]
     parts = []
     while b:
         part, b = partitionPipeline(b)

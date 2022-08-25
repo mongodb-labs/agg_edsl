@@ -1,12 +1,20 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Any
+from typing import Any, List
 
 
 class Node(ABC):
     @abstractmethod
     def to_json(self) -> str:
         ...
+
+
+@dataclass
+class Raw(Node):
+    val: Any
+
+    def to_json(self):
+        return self.val
 
 
 @dataclass
@@ -43,6 +51,28 @@ class BinOp(Node):
         return {
             f"${self.op_name}": [self.operand_a.to_json(), self.operand_b.to_json()]
         }
+
+
+@dataclass
+class BinCmp(Node):
+    op_name: str
+    operand_a: Node
+    operand_b: Node
+
+    def to_json(self):
+        return {
+            f"${self.op_name}": [self.operand_a.to_json(), self.operand_b.to_json()]
+        }
+
+
+@dataclass
+class FieldBinCmp(Node):
+    op_name: str
+    field_name: str
+    val: Node
+
+    def to_json(self):
+        return {self.field_name: {f"${self.op_name}": self.val.to_json()}}
 
 
 @dataclass
