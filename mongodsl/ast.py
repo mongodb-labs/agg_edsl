@@ -5,15 +5,23 @@ from typing import Any, List
 
 class Node(ABC):
     @abstractmethod
-    def to_json(self) -> str:
+    def to_json(self, env) -> str:
         ...
+
+
+@dataclass
+class PyVar(Node):
+    name: str
+
+    def to_json(self, env):
+        return env.get(self.name)
 
 
 @dataclass
 class Raw(Node):
     val: Any
 
-    def to_json(self):
+    def to_json(self, env):
         return self.val
 
 
@@ -21,7 +29,7 @@ class Raw(Node):
 class Const(Node):
     val: Any
 
-    def to_json(self):
+    def to_json(self, env):
         return {"$const": self.val}
 
 
@@ -29,7 +37,7 @@ class Const(Node):
 class Sym(Node):
     name: str
 
-    def to_json(self):
+    def to_json(self, env):
         return self.name
 
 
@@ -37,7 +45,7 @@ class Sym(Node):
 class Var(Node):
     name: str
 
-    def to_json(self):
+    def to_json(self, env):
         return f"${self.name}"
 
 
@@ -47,9 +55,12 @@ class BinOp(Node):
     operand_a: Node
     operand_b: Node
 
-    def to_json(self):
+    def to_json(self, env):
         return {
-            f"${self.op_name}": [self.operand_a.to_json(), self.operand_b.to_json()]
+            f"${self.op_name}": [
+                self.operand_a.to_json(env),
+                self.operand_b.to_json(env),
+            ]
         }
 
 
@@ -59,9 +70,12 @@ class BinCmp(Node):
     operand_a: Node
     operand_b: Node
 
-    def to_json(self):
+    def to_json(self, env):
         return {
-            f"${self.op_name}": [self.operand_a.to_json(), self.operand_b.to_json()]
+            f"${self.op_name}": [
+                self.operand_a.to_json(env),
+                self.operand_b.to_json(env),
+            ]
         }
 
 
@@ -71,8 +85,8 @@ class FieldBinCmp(Node):
     field_name: str
     val: Node
 
-    def to_json(self):
-        return {self.field_name: {f"${self.op_name}": self.val.to_json()}}
+    def to_json(self, env):
+        return {self.field_name: {f"${self.op_name}": self.val.to_json(env)}}
 
 
 @dataclass
@@ -81,9 +95,9 @@ class Call(Node):
     args: List[Node]
     listp: bool = False
 
-    def to_json(self):
+    def to_json(self, env):
         return {
-            f"${self.fn_name}": [x.to_json() for x in self.args]
+            f"${self.fn_name}": [x.to_json(env) for x in self.args]
             if self.listp
-            else self.args[0].to_json()
+            else self.args[0].to_json(env)
         }

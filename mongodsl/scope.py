@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
-from mongodsl.ast import BinCmp, BinOp, Call, Const, FieldBinCmp, Raw, Sym, Var
+from mongodsl.ast import (BinCmp, BinOp, Call, Const, FieldBinCmp, PyVar, Raw,
+                          Sym, Var)
 
 STAGES = ("set", "group", "addFields")
 
@@ -15,6 +16,8 @@ OPERATORS = ("floor", "add", "multiply", "subtract", "divide")
 def analyse_var(e):
     if isinstance(e, BinOp):
         return BinOp(e.op_name, analyse_var(e.operand_a), analyse_var(e.operand_b))
+    elif isinstance(e, PyVar):
+        return e
     elif isinstance(e, Call):
         return Call(e.fn_name, [analyse_var(x) for x in e.args], e.listp)
     elif isinstance(e, Var):
@@ -43,6 +46,8 @@ def analyse_var(e):
                 av = Raw(a.name)
             return FieldBinCmp(flip_cmp(e.op_name), b.name, av)
         return BinCmp(e.op_name, a, b)
+    else:
+        print(f"unknown ast node: {e}")
 
 
 def flip_cmp(op):

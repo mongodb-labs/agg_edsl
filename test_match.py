@@ -33,6 +33,6 @@ res = list(db.orders.aggregate(example))
 print(res)
 
 print("test:")
-print(json.dumps(test.to_json(), indent=4))
-res = list(test.apply(db.orders))
+print(json.dumps(test().to_json(), indent=4))
+res = list(test().apply(db.orders))
 print(res)

@@ -18,6 +18,11 @@ example = [
     {"$count": "count"},
 ]
 
+print("expected:")
+print(json.dumps(example, indent=4))
+res = list(db.orders.aggregate(example))
+print(res)
+
 
 @aggregate
 def matchGE10():
@@ -31,12 +36,7 @@ def groupAndCount():
     count("count")
 
 
-print("expected:")
-print(json.dumps(example, indent=4))
-res = list(db.orders.aggregate(example))
-print(res)
-
-test = matchGE10 | groupAndCount
+test = matchGE10() | groupAndCount()
 
 print("test:")
 print(json.dumps(test.to_json(), indent=4))
