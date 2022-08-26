@@ -11,31 +11,6 @@ from fpy.utils.placeholder import __
 from mongodsl.ast import BinCmp, BinOp, Call, Const, Raw, Sym, Var
 from mongodsl.scope import analyse_var
 
-"""
-from bson.son import SON
-
-# before
-pipeline = [
-    {"$unwind": "$tags"},
-    {"$group": {"_id": "$tags", "count": {"$sum": 1}}},
-    {"$sort": SON([("count", -1), ("_id": -1)])}
-]
-
-db.col.aggregate(pipeline)
-
-# after
-from mongodsl import aggregate
-
-@aggregate
-def pipeline():
-    unwind(tags)
-    group({"_id": tags, "count": {sum: 1}})
-    # _. is an escape for evaluation of Python expr
-    sort(_.SON([("count", -1), ("_id": -1)])})
-
-pipeline.apply(db.col)
-"""
-
 
 @dataclass
 class Ret:
@@ -78,6 +53,12 @@ class Pipeline:
 
     def to_json(self):
         return [s.to_json() for s in self.stages if s is not None]
+
+    def __or__(self, o):
+        assert isinstance(
+            o, Pipeline
+        ), "pipeline can only be composed with pipeline, what's the problem?"
+        return Pipeline(self.stages + o.stages)
 
 
 BLOCK_ARG = {"group": "_id"}

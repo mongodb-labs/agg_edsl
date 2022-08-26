@@ -13,22 +13,30 @@ db.orders.insert_many([{"k": x, "v": x % 2} for x in range(20)])
 
 
 example = [
-    {"$set": {"v20": {"$multiply": ["$v", 20]}}},
-    {"$group": {"_id": "$v20", "ka": {"$push": "$k"}, "ks": {"$addToSet": "$k"}}},
+    {"$match": {"k": {"$gte": 10}}},
+    {"$group": {"_id": "$v", "ks": {"$push": "$k"}}},
+    {"$count": "count"},
 ]
 
 
 @aggregate
-def test():
-    with group(v * 20):
-        ka = push(k)
-        ks = addToSet(k)
+def matchGE10():
+    match(k >= 10)
+
+
+@aggregate
+def groupAndCount():
+    with group(v):
+        ks = push(k)
+    count("count")
 
 
 print("expected:")
 print(json.dumps(example, indent=4))
 res = list(db.orders.aggregate(example))
 print(res)
+
+test = matchGE10 | groupAndCount
 
 print("test:")
 print(json.dumps(test.to_json(), indent=4))
