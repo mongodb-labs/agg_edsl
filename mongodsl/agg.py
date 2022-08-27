@@ -42,6 +42,20 @@ class DSLVar:
 
 
 @dataclass
+class Del:
+    name: str
+
+    def pre_and_post_stack_effect(self):
+        # for instr partition to work
+        return 0, 0
+
+
+@dataclass
+class UnsetField:
+    name: str
+
+
+@dataclass
 class SetField:
     name: List[str]
     expr: List[List[bc.Instr]]
@@ -101,7 +115,9 @@ load = and_(
         "LOAD_CLASSDEREF",
     ),
 )
+lattr = and_(instr, __.name == "LOAD_ATTR")
 const = and_(instr, __.name == "LOAD_CONST")
+delv = and_(instr, __.name == "DELETE_FAST")
 escape = one(load_) >> one(loadm)
 
 fncall = and_(instr, __.name == "CALL_FUNCTION")
@@ -214,7 +230,7 @@ def parseNormalStage(stage):
     print(stage)
     assert isinstance(
         stage[0], DSLVar
-    ), "The first thing in a stage must be the stage name"
+    ), f"The first thing in a stage must be the stage name, got: {stage}"
     assert fncall(stage[-1]), "A stage must appear as a function call"
     name = stage[0].name
     nargs = stage[-1].arg
@@ -312,6 +328,9 @@ def parseStage(stage):
     elif isinstance(stage, Block):
         print("parsing block stage")
         return parseBlockStage(stage)
+    elif isinstance(stage, UnsetField):
+        print("del stage")
+        return lambda env: Stage("$unset", lambda: stage.name)
     else:
         if none(stage[0]) and ret(stage[1]):
             return None
@@ -354,6 +373,16 @@ def partitionPipeline(instrs):
             return partitionBlock(buf, instrs)
         elif storeFast(i):
             return SetField([i.arg], [buf]), instrs
+        elif isinstance(i, Del):
+            return UnsetField(i.name), instrs
+        elif lattr(i):
+            assert isinstance(
+                buf[-1], DSLVar
+            ), "path needs to be a part of dsl var name"
+            prev = buf.pop()
+            prev.name += f".{i.arg}"
+            buf.append(prev)
+
         else:
             buf.append(i)
     return buf, []
@@ -369,11 +398,13 @@ def aggregate(fn):
         one(and_(loadf, __.arg ^ of_(*fn_args))), trans0(trans0(__.arg ^ PyLocalVar))
     )
     transLoad = ptrans(one(load), trans0(trans0(__.arg ^ DSLVar)))
-    transformedB = many(transArg | transLoad | one(instr))(b) >> get0
+    transDel = ptrans(one(delv), trans0(trans0(__.arg ^ Del)))
+    transformedB = many(transDel | transArg | transLoad | one(instr))(b) >> get0
     print(f"{transformedB = }")
     parts = []
     while transformedB:
         part, transformedB = partitionPipeline(transformedB)
+        print(f"{part = }")
         if isinstance(part, SetField):
             if parts and isinstance(parts[-1], SetField):
                 parts[-1].name += part.name
