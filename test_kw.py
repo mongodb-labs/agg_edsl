@@ -7,9 +7,9 @@ from mongodsl.agg import aggregate
 mongo = pymongo.MongoClient()
 db = mongo.get_database("dsltest")
 
-db.orders.drop()
+db.cpus.drop()
 
-db.orders.insert_many(
+db.cpus.insert_many(
     [
         {
             "codename": "Ice Lake",
@@ -82,31 +82,49 @@ db.orders.insert_many(
     ]
 )
 
+db.arch.insert_many(
+    [
+        {"codename": "Alder Lake", "arch": "Intel 7"},
+        {"codename": "Rocket Lake", "arch": "14nm"},
+        {"codename": "Comet Lake", "arch": "14nm"},
+        {"codename": "Tiger Lake", "arch": "10nm"},
+        {"codename": "Ice Lake", "arch": "10nm+"},
+    ]
+)
+
 old = [
     {"$match": {"release_year": {"$gte": 2020}}},
-    {"$unwind": "$products"},
-    {"$group": {"_id": "$products.cores", "models": {"$addToSet": "$products.model"}}},
-    {"$set": {"cores": "$_id"}},
-    {"$unset": "_id"},
+    {
+        "$lookup": {
+            "from": "arch",
+            "localField": "codename",
+            "foreignField": "codename",
+            "as": "arch",
+        }
+    },
+    # {"$unwind": "$products"},
+    # {"$group": {"_id": "$products.cores", "models": {"$addToSet": "$products.model"}}},
+    # {"$set": {"cores": "$_id"}},
+    # {"$unset": "_id"},
 ]
 
 print("expected:")
 print(json.dumps(old, indent=4))
-res = list(db.orders.aggregate(old))
+res = list(db.cpus.aggregate(old))
 print(res)
 
 
-@aggregate
-def new():
-    match(release_year >= 2020)
-    unwind(products)
-    with group(products.cores):
-        models = addToSet(products.model)
-    cores = _id
-    del _id
+# @aggregate
+# def new():
+#     match(release_year >= 2020)
+#     unwind(products)
+#     with group(products.cores):
+#         models = addToSet(products.model)
+#     cores = _id
+#     del _id
 
 
-print("test")
-print(json.dumps(new().to_json(), indent=4))
-res = list(new().apply(db.orders))
-print(res)
+# print("test")
+# print(json.dumps(test().to_json(), indent=4))
+# res = list(test().apply(db.cpus))
+# print(res)

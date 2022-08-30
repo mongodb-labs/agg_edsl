@@ -52,7 +52,7 @@ class Del:
 
 @dataclass
 class UnsetField:
-    name: str
+    name: List[str]
 
 
 @dataclass
@@ -64,6 +64,14 @@ class SetField:
 @dataclass
 class Block:
     name: str
+    argExpr: List[bc.Instr]
+    inner: List[SetField]
+
+
+@dataclass
+class OpBlock:
+    fieldName: str
+    op: str
     argExpr: List[bc.Instr]
     inner: List[SetField]
 
@@ -121,6 +129,7 @@ delv = and_(instr, __.name == "DELETE_FAST")
 escape = one(load_) >> one(loadm)
 
 fncall = and_(instr, __.name == "CALL_FUNCTION")
+kwcall = and_(instr, __.name == "CALL_FUNCTION_KW")
 popTop = and_(instr, __.name == "POP_TOP")
 popBlock = and_(instr, __.name == "POP_BLOCK")
 popExcept = and_(instr, __.name == "POP_EXCEPT")
@@ -338,7 +347,7 @@ def parseStage(stage):
         return parseNormalStage(stage)
 
 
-def partitionBlock(head, instrs):
+def partitionBareBlock(head, instrs):
     if not instrs:
         return None
     assert isinstance(head[0], DSLVar)
@@ -361,6 +370,18 @@ def partitionBlock(head, instrs):
     return Block(block_name, head[1:-1], inner_parts), instrs
 
 
+def partitionBlock(head, instrs):
+    if not instrs:
+        return None
+    alias = instrs.pop(0)
+    if popTop(alias):
+        return partitionBareBlock(head, instrs)
+    if storeFast(alias):
+        blk, rest = partitionBareBlock(head, instrs)
+        return OpBlock(alias.arg, blk.block_name, blk.argExpr, blk.inner), rest
+    raise Exception(f"SETUP_WITH followed by unknown instruction: {alias}")
+
+
 def partitionPipeline(instrs):
     if not instrs:
         return None
@@ -374,7 +395,7 @@ def partitionPipeline(instrs):
         elif storeFast(i):
             return SetField([i.arg], [buf]), instrs
         elif isinstance(i, Del):
-            return UnsetField(i.name), instrs
+            return UnsetField([i.name]), instrs
         elif lattr(i):
             assert isinstance(
                 buf[-1], DSLVar
@@ -409,8 +430,10 @@ def aggregate(fn):
             if parts and isinstance(parts[-1], SetField):
                 parts[-1].name += part.name
                 parts[-1].expr += part.expr
-            else:
-                parts.append(part)
+                continue
+        elif isinstance(part, UnsetField):
+            if parts and isinstance(parts[-1], UnsetField):
+                parts[-1].name += part.name
         else:
             parts.append(part)
     print(parts)
