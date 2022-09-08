@@ -331,6 +331,7 @@ def parseBlockStage(stage: Block):
 
 
 def parseStage(stage):
+    print(f"{stage = }")
     if isinstance(stage, SetField):
         print("parsing set stage")
         return parseSetStage(stage)
@@ -434,8 +435,8 @@ def aggregate(fn):
         elif isinstance(part, UnsetField):
             if parts and isinstance(parts[-1], UnsetField):
                 parts[-1].name += part.name
-        else:
-            parts.append(part)
+                continue
+        parts.append(part)
     print(parts)
     stages = mp1(parseStage, parts)
     print(stages)
