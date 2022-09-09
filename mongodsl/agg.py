@@ -8,6 +8,7 @@ from fpy.data.function import const, id_
 from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
 from fpy.utils.placeholder import __
+from fpy.control.functor import Functor, fmap
 
 from mongodsl.ast import BinCmp, BinOp, Call, Const, PyVar, Raw, Sym, Var
 from mongodsl.scope import analyse_var
@@ -95,14 +96,26 @@ class Pipeline:
     def to_json(self):
         return [s.to_json() for s in self.stages if s is not None]
 
-    def __or__(self, o):
+    def concat(self, o):
         assert isinstance(
             o, Pipeline
         ), "pipeline can only be composed with pipeline, what's the problem?"
         return Pipeline(self.stages + o.stages)
 
 
-BLOCK_ARG = {"group": "_id"}
+@dataclass
+class ApplicablePipeline(Functor[Pipeline]):
+    def __call__(self, col):
+        return self.val.apply(col)
+
+    def __add__(self, o: Functor[Pipeline]):
+        return fmap(o, lambda x: self.val.concat(x))
+
+    def to_json(self):
+        return self.val.to_json()
+
+
+BLOCK_ARG = {"group": "_id", "groups": "_id"}
 
 
 instr = lambda x: isinstance(x, bc.Instr)
@@ -235,24 +248,59 @@ def transformArgs(args):
     loadgTrans < -transformExpr(escTrans)
 
 
-def parseNormalStage(stage):
-    print(stage)
+def parseBareStage(stage):
     assert isinstance(
         stage[0], DSLVar
     ), f"The first thing in a stage must be the stage name, got: {stage}"
     assert fncall(stage[-1]), "A stage must appear as a function call"
     name = stage[0].name
     nargs = stage[-1].arg
-    print(f"{name = }")
-    print(f"{nargs = }")
+    # print(f"{name = }")
+    # print(f"{nargs = }")
     parts = []
     rest = stage[1:-1]
     for _ in range(nargs):
         part, rest = partitionInst(rest, 1)
         parts.append(parseExpr(part))
-    print(f"{parts = }")
+    # print(f"{parts = }")
     assert len(parts) == 1, "A stage cannot have more than one set of args"
     return lambda env: Stage(f"${name}", lambda: analyse_var(parts[0]).to_json(env))
+
+
+def parseNamedStage(stage):
+    assert isinstance(
+        stage[0], DSLVar
+    ), f"The first thing in a stage must be the stage name, got: {stage}"
+    assert kwcall(stage[-1]), "A stage must appear as a function call"
+    name = stage[0].name
+    fields = stage[-2].arg
+    nargs = stage[-1].arg
+    # print(f"{name = }")
+    # print(f"{fields = }")
+    # print(f"{nargs = }")
+    parts = []
+    rest = stage[1:-2]
+    for _ in range(nargs):
+        part, rest = partitionInst(rest, 1)
+        parts.append(parseExpr(part))
+    # print(f"{parts = }")
+    assert len(parts) == nargs, "Number of args doesn't match number of fields"
+    return lambda env: Stage(
+        f"${name}",
+        lambda: {
+            field_name: analyse_var(expr).to_json(env)
+            for field_name, expr in zip(reversed(fields), parts)
+        },
+    )
+
+
+def parseNormalStage(stage):
+    # print(stage)
+    if fncall(stage[-1]):
+        return parseBareStage(stage)
+    if kwcall(stage[-1]):
+        return parseNamedStage(stage)
+    raise Exception(stage)
 
 
 def parseExpr(instrs: List[bc.Instr]):
@@ -269,8 +317,8 @@ def parseExpr(instrs: List[bc.Instr]):
         rem = instrs[:-1]
         b, rem = partitionInst(rem, 1)
         a, rem = partitionInst(rem, 1)
-        print(f"operand {a = }")
-        print(f"operand {b = }")
+        # print(f"operand {a = }")
+        # print(f"operand {b = }")
         assert not rem
         return BinOp(OPMAP[op], parseExpr(a), parseExpr(b))
     if binCmp(instrs[-1]):
@@ -278,8 +326,8 @@ def parseExpr(instrs: List[bc.Instr]):
         rem = instrs[:-1]
         b, rem = partitionInst(rem, 1)
         a, rem = partitionInst(rem, 1)
-        print(f"operand {a = }")
-        print(f"operand {b = }")
+        # print(f"operand {a = }")
+        # print(f"operand {b = }")
         assert not rem
         return BinCmp(CMPMAP[op], parseExpr(a), parseExpr(b))
     if fncall(instrs[-1]):
@@ -331,26 +379,24 @@ def parseBlockStage(stage: Block):
 
 
 def parseStage(stage):
-    print(f"{stage = }")
+    # print(f"{stage = }")
     if isinstance(stage, SetField):
-        print("parsing set stage")
+        # print("parsing set stage")
         return parseSetStage(stage)
     elif isinstance(stage, Block):
-        print("parsing block stage")
+        # print("parsing block stage")
         return parseBlockStage(stage)
     elif isinstance(stage, UnsetField):
-        print("del stage")
+        # print("del stage")
         return lambda env: Stage("$unset", lambda: stage.name)
     else:
         if none(stage[0]) and ret(stage[1]):
             return None
-        print("parsing normal stage")
+        # print("parsing normal stage")
         return parseNormalStage(stage)
 
 
-def partitionBareBlock(head, instrs):
-    if not instrs:
-        return None
+def partitionBareCall(head, instrs):
     assert isinstance(head[0], DSLVar)
     assert fncall(head[-1])
     inner = []
@@ -369,6 +415,23 @@ def partitionBareBlock(head, instrs):
         inner_parts.append(part)
     block_name = head[0].name
     return Block(block_name, head[1:-1], inner_parts), instrs
+
+
+def partitionNamedCall(head, instrs):
+    assert isinstance(head[0], DSLVar)
+    assert kwcall(head[-1])
+    # print(f"{head = }")
+    # print(f"{instrs = }")
+
+
+def partitionBareBlock(head, instrs):
+    if not instrs:
+        return None
+    if fncall(head[-1]):
+        return partitionBareCall(head, instrs)
+    if kwcall(head[-1]):
+        return partitionNamedCall(head, instrs)
+    raise Exception(f"Don't know how to handle: {head[-1]}")
 
 
 def partitionBlock(head, instrs):
@@ -413,20 +476,20 @@ def partitionPipeline(instrs):
 def aggregate(fn):
     raw_b = bc.Bytecode.from_code(fn.__code__)
     b = [i for i in raw_b if instr(i)]
-    print(f"{b = }")
+    # print(f"{b = }")
     fn_args = fn.__code__.co_varnames[: fn.__code__.co_argcount]
-    print(f"{fn_args = }")
+    # print(f"{fn_args = }")
     transArg = ptrans(
         one(and_(loadf, __.arg ^ of_(*fn_args))), trans0(trans0(__.arg ^ PyLocalVar))
     )
     transLoad = ptrans(one(load), trans0(trans0(__.arg ^ DSLVar)))
     transDel = ptrans(one(delv), trans0(trans0(__.arg ^ Del)))
     transformedB = many(transDel | transArg | transLoad | one(instr))(b) >> get0
-    print(f"{transformedB = }")
+    # print(f"{transformedB = }")
     parts = []
     while transformedB:
         part, transformedB = partitionPipeline(transformedB)
-        print(f"{part = }")
+        # print(f"{part = }")
         if isinstance(part, SetField):
             if parts and isinstance(parts[-1], SetField):
                 parts[-1].name += part.name
@@ -437,9 +500,9 @@ def aggregate(fn):
                 parts[-1].name += part.name
                 continue
         parts.append(part)
-    print(parts)
+    # print(parts)
     stages = mp1(parseStage, parts)
-    print(stages)
+    # print(stages)
     res_fn = lambda env: Pipeline(list(map(lambda x: x(env), stages)))
     res_bc = bc.Bytecode([])
     if fn_args:
@@ -453,7 +516,7 @@ def aggregate(fn):
     for stage in stages:
         if not stage:
             continue
-        print(f"{stage = }")
+        # print(f"{stage = }")
         res_bc.append(bc.Instr("LOAD_CONST", arg=stage))
         res_bc.append(bc.Instr("ROT_TWO"))
         res_bc.append(bc.Instr("DUP_TOP"))
@@ -466,9 +529,12 @@ def aggregate(fn):
     res_bc.append(bc.Instr("LOAD_CONST", arg=Pipeline))
     res_bc.append(bc.Instr("ROT_TWO"))
     res_bc.append(bc.Instr("CALL_FUNCTION", arg=1))
+    res_bc.append(bc.Instr("LOAD_CONST", arg=ApplicablePipeline))
+    res_bc.append(bc.Instr("ROT_TWO"))
+    res_bc.append(bc.Instr("CALL_FUNCTION", arg=1))
     res_bc.append(bc.Instr("RETURN_VALUE"))
 
-    print(res_bc)
+    # print(res_bc)
 
     res_bc.argcount = len(fn_args)
     res_bc.argnames.extend(fn_args)

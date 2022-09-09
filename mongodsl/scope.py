@@ -47,7 +47,7 @@ def analyse_var(e):
             return FieldBinCmp(flip_cmp(e.op_name), b.name, av)
         return BinCmp(e.op_name, a, b)
     else:
-        print(f"unknown ast node: {e}")
+        raise Exception(f"unknown ast node: {e}")
 
 
 def flip_cmp(op):
