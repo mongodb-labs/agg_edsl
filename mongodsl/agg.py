@@ -3,15 +3,18 @@ from typing import Any, List
 
 import bytecode as bc
 from fpy.composable.collections import and_, apply, get0, mp1, of_, or_, trans0
+from fpy.control.functor import Functor, fmap
 from fpy.data.either import Right
 from fpy.data.function import const, id_
 from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
 from fpy.utils.placeholder import __
-from fpy.control.functor import Functor, fmap
 
-from mongodsl.ast import BinCmp, BinOp, Call, Const, PyVar, Raw, Sym, Var
+from mongodsl.ast import (BinCmp, BinOp, Call, Const, ExprWrapper, PyVar, Raw,
+                          Sym, Var)
 from mongodsl.scope import analyse_var
+
+AGG_REG = dict()
 
 
 @dataclass
@@ -35,6 +38,15 @@ class PyLocalVar:
 
 @dataclass
 class DSLVar:
+    name: str
+
+    def pre_and_post_stack_effect(self):
+        # for instr partition to work
+        return 1, 0
+
+
+@dataclass
+class Subpipe:
     name: str
 
     def pre_and_post_stack_effect(self):
@@ -87,14 +99,25 @@ class Stage:
 
 
 @dataclass
+class RawBC:
+    instrs: List[bc.Instr]
+
+
+@dataclass
 class Pipeline:
-    stages: List[Stage]
+    stages: List
 
     def apply(self, col):
         return col.aggregate(self.to_json())
 
     def to_json(self):
-        return [s.to_json() for s in self.stages if s is not None]
+        res = []
+        for s in self.stages:
+            if isinstance(s, Stage):
+                res.append(s.to_json())
+            elif isinstance(s, ApplicablePipeline):
+                res.extend(s.to_json())
+        return res
 
     def concat(self, o):
         assert isinstance(
@@ -261,7 +284,11 @@ def parseBareStage(stage):
     rest = stage[1:-1]
     for _ in range(nargs):
         part, rest = partitionInst(rest, 1)
-        parts.append(parseExpr(part))
+        expr = parseExpr(part)
+        if name in ("match",):
+            # a simple and stupid solution for wrapping agg expr in stages like $match
+            expr = ExprWrapper(expr)
+        parts.append(expr)
     # print(f"{parts = }")
     assert len(parts) == 1, "A stage cannot have more than one set of args"
     return lambda env: Stage(f"${name}", lambda: analyse_var(parts[0]).to_json(env))
@@ -292,6 +319,14 @@ def parseNamedStage(stage):
             for field_name, expr in zip(reversed(fields), parts)
         },
     )
+
+
+def parseSubpipe(stage):
+    # print(f"Subpipe {stage = }")
+    assert isinstance(stage[0], Subpipe)
+    sub_co = AGG_REG[stage[0].name]
+    # print(f"{sub_co = }")
+    return RawBC([bc.Instr("LOAD_CONST", sub_co)] + stage[1:])
 
 
 def parseNormalStage(stage):
@@ -393,6 +428,8 @@ def parseStage(stage):
         if none(stage[0]) and ret(stage[1]):
             return None
         # print("parsing normal stage")
+        if isinstance(stage[0], Subpipe):
+            return parseSubpipe(stage)
         return parseNormalStage(stage)
 
 
@@ -482,9 +519,14 @@ def aggregate(fn):
     transArg = ptrans(
         one(and_(loadf, __.arg ^ of_(*fn_args))), trans0(trans0(__.arg ^ PyLocalVar))
     )
+    transSubpipe = ptrans(
+        one(and_(load, __.arg ^ of_(*AGG_REG.keys()))), trans0(trans0(__.arg ^ Subpipe))
+    )
     transLoad = ptrans(one(load), trans0(trans0(__.arg ^ DSLVar)))
     transDel = ptrans(one(delv), trans0(trans0(__.arg ^ Del)))
-    transformedB = many(transDel | transArg | transLoad | one(instr))(b) >> get0
+    transformedB = (
+        many(transDel | transArg | transSubpipe | transLoad | one(instr))(b) >> get0
+    )
     # print(f"{transformedB = }")
     parts = []
     while transformedB:
@@ -516,6 +558,11 @@ def aggregate(fn):
     for stage in stages:
         if not stage:
             continue
+        stage_count += 1
+        if isinstance(stage, RawBC):
+            res_bc.extend(stage.instrs)
+            res_bc.append(bc.Instr("ROT_TWO"))
+            continue
         # print(f"{stage = }")
         res_bc.append(bc.Instr("LOAD_CONST", arg=stage))
         res_bc.append(bc.Instr("ROT_TWO"))
@@ -523,7 +570,6 @@ def aggregate(fn):
         res_bc.append(bc.Instr("ROT_THREE"))
         res_bc.append(bc.Instr("CALL_FUNCTION", 1))
         res_bc.append(bc.Instr("ROT_TWO"))
-        stage_count += 1
     res_bc.append(bc.Instr("POP_TOP"))
     res_bc.append(bc.Instr("BUILD_LIST", arg=stage_count))
     res_bc.append(bc.Instr("LOAD_CONST", arg=Pipeline))
@@ -545,4 +591,5 @@ def aggregate(fn):
     res_co = res_bc.to_code()
     fn.__code__ = res_co
 
+    AGG_REG[fn.__name__] = fn
     return fn

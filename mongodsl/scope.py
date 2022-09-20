@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from mongodsl.ast import (BinCmp, BinOp, Call, Const, FieldBinCmp, PyVar, Raw,
-                          Sym, Var)
+from mongodsl.ast import (BinCmp, BinOp, Call, Const, ExprWrapper, FieldBinCmp,
+                          PyVar, Raw, Sym, Var)
 
 STAGES = ("set", "group", "addFields")
 
@@ -28,23 +28,25 @@ def analyse_var(e):
         return e
     elif isinstance(e, Const):
         return e
+    elif isinstance(e, ExprWrapper):
+        return ExprWrapper(analyse_var(e.expr))
     elif isinstance(e, BinCmp):
         a = analyse_var(e.operand_a)
         b = analyse_var(e.operand_b)
-        if isinstance(a, Var):
-            bv = b
-            if isinstance(b, Const):
-                bv = Raw(b.val)
-            elif isinstance(b, Var):
-                bv = Raw(b.name)
-            return FieldBinCmp(e.op_name, a.name, bv)
-        if isinstance(b, Var):
-            av = a
-            if isinstance(a, Const):
-                av = Raw(a.val)
-            elif isinstance(a, Var):
-                av = Raw(a.name)
-            return FieldBinCmp(flip_cmp(e.op_name), b.name, av)
+        # if isinstance(a, Var):
+        #     bv = b
+        #     if isinstance(b, Const):
+        #         bv = Raw(b.val)
+        #     elif isinstance(b, Var):
+        #         bv = Raw(b.name)
+        #     return FieldBinCmp(e.op_name, a.name, bv)
+        # if isinstance(b, Var):
+        #     av = a
+        #     if isinstance(a, Const):
+        #         av = Raw(a.val)
+        #     elif isinstance(a, Var):
+        #         av = Raw(a.name)
+        #     return FieldBinCmp(flip_cmp(e.op_name), b.name, av)
         return BinCmp(e.op_name, a, b)
     else:
         raise Exception(f"unknown ast node: {e}")

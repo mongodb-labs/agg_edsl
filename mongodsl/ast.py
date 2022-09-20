@@ -80,13 +80,21 @@ class BinCmp(Node):
 
 
 @dataclass
+class ExprWrapper(Node):
+    expr: Node
+
+    def to_json(self, env):
+        return {"$expr": self.expr.to_json(env)}
+
+
+@dataclass
 class FieldBinCmp(Node):
     op_name: str
     field_name: str
     val: Node
 
     def to_json(self, env):
-        return {self.field_name: {f"${self.op_name}": self.val.to_json(env)}}
+        return {"$expr": {self.field_name: {f"${self.op_name}": self.val.to_json(env)}}}
 
 
 @dataclass
