@@ -325,8 +325,14 @@ def parseSubpipe(stage):
     # print(f"Subpipe {stage = }")
     assert isinstance(stage[0], Subpipe)
     sub_co = AGG_REG[stage[0].name]
+    instrs = []
+    for instr in stage[1:]:
+        if isinstance(instr, bc.Instr):
+            instrs.append(instr)
+        elif isinstance(instr, PyLocalVar):
+            instrs.append(bc.Instr("LOAD_FAST", instr.name))
     # print(f"{sub_co = }")
-    return RawBC([bc.Instr("LOAD_CONST", sub_co)] + stage[1:])
+    return RawBC([bc.Instr("LOAD_CONST", sub_co)] + instrs)
 
 
 def parseNormalStage(stage):

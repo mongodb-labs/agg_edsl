@@ -24,8 +24,8 @@ print(res)
 
 
 @aggregate
-def matchGE10():
-    match(k > f * 2)
+def matchGE10(factor):
+    match(k > f * factor)
 
 
 @aggregate
@@ -34,12 +34,17 @@ def removeId():
 
 
 @aggregate
-def matchAndRemove():
-    matchGE10()
+def matchAndRemove(f):
+    matchGE10(f)
     removeId()
 
 
-print("embedded:")
-print(json.dumps(matchAndRemove().to_json(), indent=4))
-res = list(matchAndRemove()(db.orders))
+print("embedded 2:")
+print(json.dumps(matchAndRemove(2).to_json(), indent=4))
+res = list(matchAndRemove(2)(db.orders))
+print(res)
+
+print("embedded 1.5:")
+print(json.dumps(matchAndRemove(1.5).to_json(), indent=4))
+res = list(matchAndRemove(1.5)(db.orders))
 print(res)
