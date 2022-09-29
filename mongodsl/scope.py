@@ -1,7 +1,18 @@
 from dataclasses import dataclass
 
-from mongodsl.ast import (BinCmp, BinOp, Call, Const, ExprWrapper, FieldBinCmp,
-                          PyVar, Raw, Sym, Var)
+from mongodsl.ast import (
+    BinCmp,
+    BinOp,
+    Call,
+    Const,
+    ExprWrapper,
+    FieldBinCmp,
+    PyVar,
+    Raw,
+    Sym,
+    Var,
+    Bytecode,
+)
 
 STAGES = ("set", "group", "addFields")
 
@@ -25,6 +36,8 @@ def analyse_var(e):
     elif isinstance(e, Sym):
         return Var(e.name)
     elif isinstance(e, Raw):
+        return e
+    elif isinstance(e, Bytecode):
         return e
     elif isinstance(e, Const):
         return e

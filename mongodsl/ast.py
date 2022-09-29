@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, List
 
+import bytecode as bc
+
 
 class Node(ABC):
     @abstractmethod
-    def to_json(self, env) -> str:
+    def to_json(self, env, glob) -> str:
         ...
 
 
@@ -13,7 +15,7 @@ class Node(ABC):
 class PyVar(Node):
     name: str
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return env.get(self.name)
 
 
@@ -21,15 +23,26 @@ class PyVar(Node):
 class Raw(Node):
     val: Any
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return self.val
+
+
+@dataclass
+class Bytecode(Node):
+    code: List[bc.Instr]
+
+    def to_json(self, env, glob):
+        bc_ = bc.Bytecode(self.code)
+        bc_.update_flags()
+        co = bc_.to_code()
+        return eval(co, glob or globals(), {**(env or {}), **locals()})
 
 
 @dataclass
 class Const(Node):
     val: Any
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return {"$const": self.val}
 
 
@@ -37,7 +50,7 @@ class Const(Node):
 class Sym(Node):
     name: str
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return self.name
 
 
@@ -45,7 +58,7 @@ class Sym(Node):
 class Var(Node):
     name: str
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return f"${self.name}"
 
 
@@ -55,11 +68,11 @@ class BinOp(Node):
     operand_a: Node
     operand_b: Node
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return {
             f"${self.op_name}": [
-                self.operand_a.to_json(env),
-                self.operand_b.to_json(env),
+                self.operand_a.to_json(env, glob),
+                self.operand_b.to_json(env, glob),
             ]
         }
 
@@ -70,11 +83,11 @@ class BinCmp(Node):
     operand_a: Node
     operand_b: Node
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return {
             f"${self.op_name}": [
-                self.operand_a.to_json(env),
-                self.operand_b.to_json(env),
+                self.operand_a.to_json(env, glob),
+                self.operand_b.to_json(env, glob),
             ]
         }
 
@@ -83,8 +96,8 @@ class BinCmp(Node):
 class ExprWrapper(Node):
     expr: Node
 
-    def to_json(self, env):
-        return {"$expr": self.expr.to_json(env)}
+    def to_json(self, env, glob):
+        return {"$expr": self.expr.to_json(env, glob)}
 
 
 @dataclass
@@ -93,8 +106,12 @@ class FieldBinCmp(Node):
     field_name: str
     val: Node
 
-    def to_json(self, env):
-        return {"$expr": {self.field_name: {f"${self.op_name}": self.val.to_json(env)}}}
+    def to_json(self, env, glob):
+        return {
+            "$expr": {
+                self.field_name: {f"${self.op_name}": self.val.to_json(env, glob)}
+            }
+        }
 
 
 @dataclass
@@ -103,9 +120,9 @@ class Call(Node):
     args: List[Node]
     listp: bool = False
 
-    def to_json(self, env):
+    def to_json(self, env, glob):
         return {
-            f"${self.fn_name}": [x.to_json(env) for x in self.args]
+            f"${self.fn_name}": [x.to_json(env, glob) for x in self.args]
             if self.listp
-            else self.args[0].to_json(env)
+            else self.args[0].to_json(env, glob)
         }

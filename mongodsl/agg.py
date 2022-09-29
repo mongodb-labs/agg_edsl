@@ -10,8 +10,20 @@ from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
 from fpy.utils.placeholder import __
 
-from mongodsl.ast import (BinCmp, BinOp, Call, Const, ExprWrapper, PyVar, Raw,
-                          Sym, Var)
+
+from mongodsl.udf import transformUDF
+from mongodsl.ast import (
+    BinCmp,
+    BinOp,
+    Call,
+    Const,
+    ExprWrapper,
+    PyVar,
+    Raw,
+    Sym,
+    Var,
+    Bytecode,
+)
 from mongodsl.scope import analyse_var
 
 AGG_REG = dict()
@@ -291,7 +303,9 @@ def parseBareStage(stage):
         parts.append(expr)
     # print(f"{parts = }")
     assert len(parts) == 1, "A stage cannot have more than one set of args"
-    return lambda env: Stage(f"${name}", lambda: analyse_var(parts[0]).to_json(env))
+    return lambda env, glob: Stage(
+        f"${name}", lambda: analyse_var(parts[0]).to_json(env, glob)
+    )
 
 
 def parseNamedStage(stage):
@@ -312,10 +326,10 @@ def parseNamedStage(stage):
         parts.append(parseExpr(part))
     # print(f"{parts = }")
     assert len(parts) == nargs, "Number of args doesn't match number of fields"
-    return lambda env: Stage(
+    return lambda env, glob: Stage(
         f"${name}",
         lambda: {
-            field_name: analyse_var(expr).to_json(env)
+            field_name: analyse_var(expr).to_json(env, glob)
             for field_name, expr in zip(reversed(fields), parts)
         },
     )
@@ -342,6 +356,20 @@ def parseNormalStage(stage):
     if kwcall(stage[-1]):
         return parseNamedStage(stage)
     raise Exception(stage)
+
+
+def parseUDF(instrs):
+    udf_name = instrs[1].name
+    # print(f"{udf_name = }")
+    code = [
+        bc.Instr("LOAD_CONST", transformUDF),
+        bc.Instr("LOAD_GLOBAL", udf_name),
+        bc.Instr("CALL_FUNCTION", 1),
+        bc.Instr("LOAD_CONST", ("$udf",)),
+        bc.Instr("BUILD_CONST_KEY_MAP", 1),
+        bc.Instr("RETURN_VALUE"),
+    ]
+    return Bytecode(code)
 
 
 def parseExpr(instrs: List[bc.Instr]):
@@ -376,6 +404,8 @@ def parseExpr(instrs: List[bc.Instr]):
             instrs[0], DSLVar
         ), f"a function call must happen to a DSL variable, got: {instrs[0]}"
         fn_name = instrs[0].name
+        if fn_name == "udf":
+            return parseUDF(instrs)
         parts = []
         rem = instrs[1:-1]
         for _ in range(instrs[-1].arg):
@@ -389,10 +419,10 @@ def parseExpr(instrs: List[bc.Instr]):
 def parseSetStage(stage: SetField):
     field_name = stage.name
     raw_expr = list(map(parseExpr, stage.expr))
-    return lambda env: Stage(
+    return lambda env, glob: Stage(
         "$set",
         lambda: {
-            name: analyse_var(expr).to_json(env)
+            name: analyse_var(expr).to_json(env, glob)
             for name, expr in zip(field_name, raw_expr)
         },
     )
@@ -409,11 +439,13 @@ def parseBlockStage(stage: Block):
         # assert isinstance(inner, SetField)
         inner_name.append(inner.name[0])
         inner_expr.append(parseExpr(inner.expr[0]))
-    return lambda env: Stage(
+    return lambda env, glob: Stage(
         f"${stage.name}",
-        lambda: ({argFieldName: analyse_var(arg).to_json(env)} if argFieldName else {})
+        lambda: (
+            {argFieldName: analyse_var(arg).to_json(env, glob)} if argFieldName else {}
+        )
         | {
-            name: analyse_var(expr).to_json(env)
+            name: analyse_var(expr).to_json(env, glob)
             for name, expr in zip(inner_name, inner_expr)
         },
     )
@@ -429,7 +461,7 @@ def parseStage(stage):
         return parseBlockStage(stage)
     elif isinstance(stage, UnsetField):
         # print("del stage")
-        return lambda env: Stage("$unset", lambda: stage.name)
+        return lambda env, glob: Stage("$unset", lambda: stage.name)
     else:
         if none(stage[0]) and ret(stage[1]):
             return None
@@ -560,6 +592,13 @@ def aggregate(fn):
         res_bc.append(bc.Instr("BUILD_CONST_KEY_MAP", arg=len(fn_args)))
     else:
         res_bc.append(bc.Instr("LOAD_CONST", arg=None))
+    res_bc.extend(
+        [
+            bc.Instr("LOAD_GLOBAL", "globals"),
+            bc.Instr("CALL_FUNCTION", 0),
+            bc.Instr("BUILD_TUPLE", 2),
+        ]
+    )
     stage_count = 0
     for stage in stages:
         if not stage:
@@ -574,7 +613,7 @@ def aggregate(fn):
         res_bc.append(bc.Instr("ROT_TWO"))
         res_bc.append(bc.Instr("DUP_TOP"))
         res_bc.append(bc.Instr("ROT_THREE"))
-        res_bc.append(bc.Instr("CALL_FUNCTION", 1))
+        res_bc.append(bc.Instr("CALL_FUNCTION_EX", 0))
         res_bc.append(bc.Instr("ROT_TWO"))
     res_bc.append(bc.Instr("POP_TOP"))
     res_bc.append(bc.Instr("BUILD_LIST", arg=stage_count))
