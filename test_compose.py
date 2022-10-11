@@ -36,9 +36,9 @@ def groupAndCount():
     count("count")
 
 
-test = matchGE10() | groupAndCount()
+test = matchGE10() + groupAndCount()
 
 print("test:")
 print(json.dumps(test.to_json(), indent=4))
-res = list(test.apply(db.orders))
+res = list(test(db.orders))
 print(res)
