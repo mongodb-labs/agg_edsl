@@ -1,10 +1,12 @@
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, List, Union
 
 import bytecode as bc
 from fpy.composable.collections import and_, apply, get0, mp1, of_, or_, trans0
 from fpy.control.functor import Functor, fmap
+from fpy.control.natural_transform import NTrans
 from fpy.data.either import Right
+from fpy.data.maybe import Maybe
 from fpy.data.function import const, id_
 from fpy.experimental.do import do
 from fpy.parsec.parsec import many, one, ptrans
@@ -13,6 +15,9 @@ from fpy.utils.placeholder import __
 from mongodsl.ast import (BinCmp, BinOp, Call, Const, ExprWrapper, PyVar, Raw,
                           Sym, Var)
 from mongodsl.scope import analyse_var
+
+import pymongo as pm
+import bson
 
 AGG_REG = dict()
 
@@ -105,37 +110,80 @@ class RawBC:
 
 @dataclass
 class Pipeline:
+    name: str
     stages: List
 
-    def apply(self, col):
-        return col.aggregate(self.to_json())
-
-    def to_json(self):
-        res = []
-        for s in self.stages:
+    @staticmethod
+    def to_json(p, r):
+        for s in p.stages:
             if isinstance(s, Stage):
-                res.append(s.to_json())
+                r.append(s.to_json())
             elif isinstance(s, ApplicablePipeline):
-                res.extend(s.to_json())
-        return res
-
-    def concat(self, o):
-        assert isinstance(
-            o, Pipeline
-        ), "pipeline can only be composed with pipeline, what's the problem?"
-        return Pipeline(self.stages + o.stages)
+                r.extend(s.to_json())
+        return r
 
 
 @dataclass
-class ApplicablePipeline(Functor[Pipeline]):
+class ApplicablePipeline(Functor[List[Pipeline]]):
     def __call__(self, col):
-        return self.val.apply(col)
+        return col.aggregate(self.to_json())
 
-    def __add__(self, o: Functor[Pipeline]):
-        return fmap(o, lambda x: self.val.concat(x))
+    def __or__(self, o: Functor[List[Pipeline]]):
+        return self.__fmap__(lambda x: [*x, *o.val])
 
     def to_json(self):
-        return self.val.to_json()
+        j = []
+        for s in self.val:
+            j = Pipeline.to_json(s, j)
+        return j
+
+def fresh(n, counter={}):
+    if n not in counter:
+        counter[n]= 0
+    counter[n] += 1
+    return f"{n}_{counter[n]}"
+
+class debug_wrap:
+    def __init__(self, debug_db, pname, docs):
+        self.debug_db = debug_db
+        self.col_name = fresh(pname + str(bson.ObjectId()))
+        self.debug_db.get_collection(self.col_name).insert_many(docs)
+
+    def aggregate(self, pipe):
+        return self.debug_db.get_collection(self.col_name).aggregate(pipe)
+        
+
+@dataclass
+class DebugPipeline(ApplicablePipeline):
+    debug_db: pm.database.Database
+    sample_size: int
+
+    def __call__(self, col):
+        debug_out = []
+        to_agg = col
+        debug_col = []
+        for p in self.val:
+            res = []
+            cur = to_agg.aggregate(Pipeline.to_json(p, []))
+            for _ in range(self.sample_size):
+                try:
+                    res.append(next(cur))
+                except StopIteration:
+                    break
+            debug_out.append((p.name, res))
+            to_agg = debug_wrap(self.debug_db, p.name, res)
+            debug_col.append(to_agg.col_name)
+        for colname in debug_col:
+            self.debug_db.drop_collection(colname)
+        return debug_out
+
+def DEBUG(debug_db, sample_size=50):
+    def res(pipe):
+        return DebugPipeline(pipe, debug_db, sample_size)
+    return NTrans(res)
+
+
+
 
 
 BLOCK_ARG = {"group": "_id", "groups": "_id"}
@@ -580,9 +628,12 @@ def aggregate(fn):
     res_bc.append(bc.Instr("BUILD_LIST", arg=stage_count))
     res_bc.append(bc.Instr("LOAD_CONST", arg=Pipeline))
     res_bc.append(bc.Instr("ROT_TWO"))
-    res_bc.append(bc.Instr("CALL_FUNCTION", arg=1))
+    res_bc.append(bc.Instr("LOAD_CONST", arg=fn.__name__))
+    res_bc.append(bc.Instr("ROT_TWO"))
+    res_bc.append(bc.Instr("CALL_FUNCTION", arg=2))
     res_bc.append(bc.Instr("LOAD_CONST", arg=ApplicablePipeline))
     res_bc.append(bc.Instr("ROT_TWO"))
+    res_bc.append(bc.Instr("BUILD_LIST", arg=1))
     res_bc.append(bc.Instr("CALL_FUNCTION", arg=1))
     res_bc.append(bc.Instr("RETURN_VALUE"))
 
